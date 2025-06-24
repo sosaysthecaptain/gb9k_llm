@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { get_api_key } from './utils.js';
+import { get_api_key, getAllCodeFiles } from './utils.js';
 import fetch from 'node-fetch';
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -21,7 +21,7 @@ const VALID_MODELS = [
   'openrouter/auto',
 ];
 const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
-const SYSTEM_MESSAGE = `You are a coding assistant, you will receive (1) a list of relevant files, (2) the files themselves, and (3) the user's prompt and subsequent conversation. Please return useful modifications to files as, in code blocks labeled with the name of the file after the opening three tick marks.`;
+const SYSTEM_MESSAGE = `You are a coding assistant. You will receive: (1) a list of relevant files, (2) the contents of those files, and (3) the user's prompt and subsequent conversation. Provide useful modifications to files in code blocks labeled with the file name after the opening triple backticks (e.g., \`\`\`main.js).`;
 
 async function findPromptFile() {
   const items = await fs.readdir(process.cwd(), { withFileTypes: true });
@@ -44,6 +44,15 @@ async function parsePromptFile(filePath) {
     model = DEFAULT_MODEL;
   }
 
+  // Extract context
+  const contextMatch = content.match(/### Context\n([\s\S]*?)(?=\n###|\n---|$)/);
+  const contextFiles = contextMatch
+    ? contextMatch[1]
+        .split('\n')
+        .map(line => line.trim().replace(/^- /, ''))
+        .filter(line => line)
+    : [];
+
   // Extract conversation after ---
   const conversationMatch = content.match(/---\n([\s\S]*)$/);
   if (!conversationMatch) {
@@ -63,7 +72,22 @@ async function parsePromptFile(filePath) {
     }
   }
 
-  return { model, messages };
+  return { model, contextFiles, messages };
+}
+
+async function getFileContents(contextFiles) {
+  const excludePaths = new Set(contextFiles.map(file => path.resolve(file)));
+  const files = await getAllCodeFiles(process.cwd(), contextFiles.length > 0 ? contextFiles : null, excludePaths);
+
+  const fileContents = await Promise.all(
+    files.map(async file => {
+      const relativePath = path.relative(process.cwd(), file);
+      const content = await fs.readFile(file, 'utf8');
+      return { relativePath, content };
+    })
+  );
+
+  return fileContents.map(({ relativePath, content }) => `/* ~~~ ${relativePath} ~~~ */\n${content}`).join('\n\n');
 }
 
 export async function runPrompt() {
@@ -81,9 +105,9 @@ export async function runPrompt() {
     process.exit(1);
   }
 
-  let model, messages;
+  let model, contextFiles, messages;
   try {
-    ({ model, messages } = await parsePromptFile(promptFile));
+    ({ model, contextFiles, messages } = await parsePromptFile(promptFile));
   } catch (error) {
     console.error(`Error parsing prompt file: ${error.message}`);
     process.exit(1);
@@ -94,6 +118,25 @@ export async function runPrompt() {
     process.exit(1);
   }
 
+  // Prepare messages
+  const apiMessages = [
+    { role: 'system', content: SYSTEM_MESSAGE },
+    { role: 'user', content: `Relevant files:\n${contextFiles.join('\n')}` },
+  ];
+
+  if (contextFiles.length > 0) {
+    const fileContents = await getFileContents(contextFiles);
+    apiMessages.push({ role: 'user', content: `File contents:\n${fileContents}` });
+  }
+
+  apiMessages.push(...messages);
+
+  // Log messages for debugging
+  console.log('Messages sent to OpenRouter:');
+  apiMessages.forEach((msg, index) => {
+    console.log(`Message ${index + 1} (${msg.role}):\n${msg.content}\n`);
+  });
+
   const headers = {
     'Authorization': `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
@@ -103,7 +146,7 @@ export async function runPrompt() {
 
   const body = JSON.stringify({
     model,
-    messages: [{ role: 'system', content: SYSTEM_MESSAGE }, ...messages],
+    messages: apiMessages,
     stream: true,
   });
 

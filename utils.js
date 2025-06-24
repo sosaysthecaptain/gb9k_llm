@@ -6,6 +6,12 @@ import path from 'path';
 const CONFIG_DIR = path.join(os.homedir(), '.gb9k');
 const API_KEY_FILE = path.join(CONFIG_DIR, 'api_key');
 
+const VALID_EXTENSIONS = [
+  '.js', '.ts', '.jsx', '.tsx',
+  '.json', '.py', '.java', '.cpp',
+  '.c', '.cs', '.rb', '.php', '.go', '.md', '.txt'
+];
+
 export async function ask_question(question, validResponses = null) {
   const rl = readline.createInterface({
     input: process.stdin,
@@ -16,7 +22,7 @@ export async function ask_question(question, validResponses = null) {
   do {
     response = await rl.question(question + ' ');
     if (validResponses && !validResponses.includes(response.toLowerCase())) {
-      console.log(`Please enter one of: ${validResponses.join(', ')}}`);
+      console.log(`Please enter one of: ${validResponses.join(', ')}`);
     }
   } while (validResponses && !validResponses.includes(response.toLowerCase()));
 
@@ -26,7 +32,7 @@ export async function ask_question(question, validResponses = null) {
 
 export async function set_api_key(api_key) {
   if (!api_key || typeof api_key !== 'string') {
-    console.log('API key cleared');
+    console.log('No API key provided.');
     return;
   }
 
@@ -68,4 +74,66 @@ export async function prompt_user_for_api_key() {
   }
   const apiKey = await ask_question('Enter your API key: ');
   await set_api_key(apiKey);
+}
+
+export async function getAllCodeFiles(dir, specificPaths = null, excludePaths = new Set()) {
+  let files = [];
+  const normalizedExcludePaths = Array.from(excludePaths).map(p => path.resolve(p));
+
+  if (specificPaths) {
+    for (const sp of specificPaths) {
+      const resolvedPath = path.resolve(sp);
+      if (normalizedExcludePaths.includes(resolvedPath)) {
+        continue;
+      }
+
+      const stat = await fs.stat(resolvedPath);
+      if (stat.isDirectory()) {
+        files.push(...await getAllCodeFiles(resolvedPath, null, excludePaths));
+      } else if (stat.isFile() &&
+        (VALID_EXTENSIONS.some(ext => resolvedPath.endsWith(ext)) ||
+          path.basename(resolvedPath) === 'package.json') &&
+        !path.basename(resolvedPath).startsWith('_PROMPT')) {
+        files.push(resolvedPath);
+      }
+    }
+    return files;
+  }
+
+  const items = await fs.readdir(dir, { withFileTypes: true });
+
+  for (const item of items) {
+    const fullPath = path.join(dir, item.name);
+
+    if (normalizedExcludePaths.includes(fullPath)) {
+      continue;
+    }
+
+    if (item.isDirectory() && (
+      item.name === 'node_modules' ||
+      item.name === '.git' ||
+      item.name === 'dist' ||
+      item.name === 'build'
+    )) {
+      continue;
+    }
+
+    if (item.isFile() && (
+      item.name === 'package-lock.json' ||
+      item.name === 'yarn.lock' ||
+      item.name === '.gitignore' ||
+      item.name.startsWith('_PROMPT')
+    )) {
+      continue;
+    }
+
+    if (item.isDirectory()) {
+      files.push(...await getAllCodeFiles(fullPath, null, excludePaths));
+    } else if (VALID_EXTENSIONS.some(ext => item.name.endsWith(ext)) ||
+      item.name === 'package.json') {
+      files.push(fullPath);
+    }
+  }
+
+  return files;
 }
