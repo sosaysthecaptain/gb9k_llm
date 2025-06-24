@@ -10,4 +10,4 @@ openai/gpt-4o
 -----------
 
 ### User
-This is a test prompt. Pick a planet and tell me about it briefly.
+Tell me about the context you received.

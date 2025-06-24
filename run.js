@@ -21,7 +21,7 @@ const VALID_MODELS = [
   'openrouter/auto',
 ];
 const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
-const SYSTEM_MESSAGE = 'You are a helpful AI assistant designed to provide accurate and concise answers based on the provided conversation and context.';
+const SYSTEM_MESSAGE = `You are a coding assistant, you will receive (1) a list of relevant files, (2) the files themselves, and (3) the user's prompt and subsequent conversation. Please return useful modifications to files as, in code blocks labeled with the name of the file after the opening three tick marks.`;
 
 async function findPromptFile() {
   const items = await fs.readdir(process.cwd(), { withFileTypes: true });
