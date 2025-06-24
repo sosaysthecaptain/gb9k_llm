@@ -5,8 +5,9 @@ gemini-2.5-pro
 - README.md
 - main.js
 - package.json
+- utils.js
 
 -----------
 
 ### User
-This is some text in prompt
+<!-- Enter your prompt here, then execute `gb9k run` -->

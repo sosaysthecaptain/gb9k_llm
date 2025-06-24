@@ -12,7 +12,8 @@
     "start": "node make_prompt.js"
   },
   "dependencies": {
-    "clipboardy": "^3.0.0"
+    "clipboardy": "^3.0.0",
+    "node-fetch": "^3.3.2"
   },
   "author": "sosaysthecaptain",
   "license": "MIT"

@@ -4,6 +4,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { prompt_user_for_api_key } from './utils.js';
+import { runPrompt } from './run.js';
 const execAsync = promisify(exec);
 const { default: clipboardy } = await import('clipboardy');
 
@@ -105,7 +107,8 @@ Usage: gb9k [command] [options] [path1 path2 ...]
 Commands:
   copy              Concatenates code files and copies to clipboard without writing to any file
   cleanup           Deletes all markdown files starting with _PROMPT
-  run               Prints "not implemented"
+  run               Sends the user prompt from _PROMPT.md to OpenRouter and streams the response
+  set_api_key       Sets or updates the API key for the tool
   (default)         Concatenates code files, copies to clipboard, writes to _PROMPT.md, and opens in VS Code
 
 Options:
@@ -120,12 +123,13 @@ Arguments:
 Examples:
   gb9k copy                   # Copy code files to clipboard without writing
   gb9k cleanup                # Delete all _PROMPT*.md files
-  gb9k run                    # Print "not implemented"
+  gb9k run                    # Run the prompt in _PROMPT.md via OpenRouter
+  gb9k set_api_key            # Set or update the API key
   gb9k                        # Default: process files, copy to clipboard, write to _PROMPT.md
   gb9k --file output.txt      # Default with writing to output.txt
   gb9k --exclude src/dir2     # Default but exclude src/dir2
     `);
-	}
+}
 
 async function cleanupPromptFiles() {
 	const items = await fs.readdir(process.cwd(), { withFileTypes: true });
@@ -196,12 +200,17 @@ async function main() {
 		const argsWithoutCommand = command ? args.slice(1) : args;
 
 		if (command === 'run') {
-			console.log('not implemented');
+			await runPrompt();
 			return;
 		}
 
 		if (command === 'cleanup') {
 			await cleanupPromptFiles();
+			return;
+		}
+
+		if (command === 'set_api_key') {
+			await prompt_user_for_api_key();
 			return;
 		}
 
@@ -292,7 +301,7 @@ ${fileList}
 		}
 
 	} catch (error) {
-		console.error('Error:', error);
+		console.error('Error:', error.message);
 		process.exit(1);
 	}
 }
