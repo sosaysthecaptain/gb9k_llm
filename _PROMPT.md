@@ -6,7 +6,7 @@ gemini-2.5-pro
 - main.js
 - package.json
 
----
+-----------
 
 ### User
-<!-- Enter your prompt here, then execute `gb9k run` -->
+This is some text in prompt

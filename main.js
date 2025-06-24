@@ -32,7 +32,8 @@ async function getAllCodeFiles(dir, specificPaths = null, excludePaths = new Set
 				files.push(...await getAllCodeFiles(resolvedPath, null, excludePaths));
 			} else if (stat.isFile() &&
 			(VALID_EXTENSIONS.some(ext => resolvedPath.endsWith(ext)) ||
-			path.basename(resolvedPath) === 'package.json')) {
+			path.basename(resolvedPath) === 'package.json') &&
+			!path.basename(resolvedPath).startsWith('_PROMPT')) {
 				files.push(resolvedPath);
 			}
 		}
@@ -64,7 +65,8 @@ async function getAllCodeFiles(dir, specificPaths = null, excludePaths = new Set
 		if (item.isFile() && (
 			item.name === 'package-lock.json' ||
 			item.name === 'yarn.lock' ||
-			item.name === '.gitignore'
+			item.name === '.gitignore' ||
+			item.name.startsWith('_PROMPT')
 		)) {
 			continue;
 		}
@@ -98,15 +100,17 @@ function formatNumber(num) {
 
 function showHelp() {
 	console.log(`
-Usage: gb9k [options] [path1 path2 ...]
+Usage: gb9k [command] [options] [path1 path2 ...]
 
-Concatenates code files into a single prompt, separated by file paths, and copies to clipboard.
-Optionally writes to a specified file if --file is provided with a filename.
-Always writes to _PROMPT.md with a structured format and opens it in VS Code.
+Commands:
+  copy              Concatenates code files and copies to clipboard without writing to any file
+  cleanup           Deletes all markdown files starting with _PROMPT
+  run               Prints "not implemented"
+  (default)         Concatenates code files, copies to clipboard, writes to _PROMPT.md, and opens in VS Code
 
 Options:
   --help            Show this help message and exit
-  --file <filename> Write the output to the specified file in addition to copying to clipboard and writing to _PROMPT.md
+  --file <filename> Write the output to the specified file (only for default command)
   --exclude path1 [path2 ...]
                     Exclude specified files or directories from processing
 
@@ -114,14 +118,68 @@ Arguments:
   path1 path2 ...   Specific files or directories to include (if provided, only these are processed)
 
 Examples:
-  gb9k                        # Process all code files in current directory and subdirectories
-  gb9k --file output.txt      # Same as above, but also write to output.txt
-  gb9k src/file1.js src/dir   # Process only specified file and directory
-  gb9k --exclude src/dir2     # Process all files except those in src/dir2
-  gb9k --file custom.txt --exclude file1.js src/dir2 src/file2.js
-                                     # Process file2.js, exclude file1.js and dir2, and write to custom.txt
+  gb9k copy                   # Copy code files to clipboard without writing
+  gb9k cleanup                # Delete all _PROMPT*.md files
+  gb9k run                    # Print "not implemented"
+  gb9k                        # Default: process files, copy to clipboard, write to _PROMPT.md
+  gb9k --file output.txt      # Default with writing to output.txt
+  gb9k --exclude src/dir2     # Default but exclude src/dir2
     `);
 	}
+
+async function cleanupPromptFiles() {
+	const items = await fs.readdir(process.cwd(), { withFileTypes: true });
+	for (const item of items) {
+		if (item.isFile() && item.name.startsWith('_PROMPT') && item.name.endsWith('.md')) {
+			const fullPath = path.join(process.cwd(), item.name);
+			await fs.unlink(fullPath);
+			console.log(`Deleted ${item.name}`);
+		}
+	}
+	console.log('Cleanup complete');
+}
+
+async function processFiles(specificPaths, excludePaths) {
+	const files = await getAllCodeFiles(process.cwd(), specificPaths.length > 0 ? specificPaths : null, excludePaths);
+
+	if (files.length === 0) {
+		console.log('No code files found');
+		return null;
+	}
+
+	// Process files and collect stats
+	const fileContents = await Promise.all(
+		files.map(async file => {
+			const relativePath = path.relative(process.cwd(), file);
+			const content = await fs.readFile(file, 'utf8');
+			return { relativePath, content };
+		})
+	);
+
+	// Concatenate contents with separators
+	const result = fileContents
+		.map(({ relativePath, content }) => `/* ~~~ ${relativePath} ~~~ */\n${content}`)
+		.join('\n\n');
+
+	// Calculate stats
+	const fileCount = files.length;
+	const lineCount = countLines(result);
+	const tokenCount = estimateTokens(result);
+
+	// Log included files
+	console.log('\nIncluded files:');
+	fileContents.forEach(({ relativePath }) => {
+		console.log(`- ${relativePath}`);
+	});
+
+	// Log stats with formatted numbers
+	console.log('\nStats:');
+	console.log(`- Number of files: ${formatNumber(fileCount)}`);
+	console.log(`- Number of lines: ${formatNumber(lineCount)}`);
+	console.log(`- Estimated tokens: ${formatNumber(tokenCount)}`);
+
+	return { result, fileContents };
+}
 
 async function main() {
 	try {
@@ -133,10 +191,24 @@ async function main() {
 			return;
 		}
 
+		// Check for commands
+		const command = args[0] && !args[0].startsWith('--') ? args[0] : null;
+		const argsWithoutCommand = command ? args.slice(1) : args;
+
+		if (command === 'run') {
+			console.log('not implemented');
+			return;
+		}
+
+		if (command === 'cleanup') {
+			await cleanupPromptFiles();
+			return;
+		}
+
 		// Handle --file flag and collect the filename
 		let outputFile = null;
 		let fileNext = false;
-		const remainingArgsAfterFile = args.filter(arg => {
+		const remainingArgsAfterFile = argsWithoutCommand.filter(arg => {
 			if (arg === '--file') {
 				fileNext = true;
 				return false;
@@ -175,47 +247,20 @@ async function main() {
 			.map(p => path.resolve(p))
 			.filter(p => !excludePaths.has(p));
 
-		const files = await getAllCodeFiles(process.cwd(), specificPaths.length > 0 ? specificPaths : null, excludePaths);
-
-		if (files.length === 0) {
-			console.log('No code files found');
+		// Process files
+		const processed = await processFiles(specificPaths, excludePaths);
+		if (!processed) {
 			return;
 		}
+		const { result, fileContents } = processed;
 
-		// Process files and collect stats
-		const fileContents = await Promise.all(
-			files.map(async file => {
-				const relativePath = path.relative(process.cwd(), file);
-				const content = await fs.readFile(file, 'utf8');
-				return { relativePath, content };
-			})
-		);
-
-		// Concatenate contents with separators
-		const result = fileContents
-			.map(({ relativePath, content }) => `/* ~~~ ${relativePath} ~~~ */\n${content}`)
-			.join('\n\n');
-
-		// Calculate stats
-		const fileCount = files.length;
-		const lineCount = countLines(result);
-		const tokenCount = estimateTokens(result);
-
-		// Copy to clipboard first
+		// Copy to clipboard
 		await clipboardy.write(result);
 		console.log('Content copied to clipboard');
 
-		// Log included files
-		console.log('\nIncluded files:');
-		fileContents.forEach(({ relativePath }) => {
-			console.log(`- ${relativePath}`);
-		});
-
-		// Log stats with formatted numbers
-		console.log('\nStats:');
-		console.log(`- Number of files: ${formatNumber(fileCount)}`);
-		console.log(`- Number of lines: ${formatNumber(lineCount)}`);
-		console.log(`- Estimated tokens: ${formatNumber(tokenCount)}`);
+		if (command === 'copy') {
+			return; // Exit after copying, no file writing
+		}
 
 		// Write to _PROMPT.md with the specified structure
 		const fileList = fileContents.map(({ relativePath }) => `- ${relativePath}`).join('\n');
