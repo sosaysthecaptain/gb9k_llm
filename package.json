@@ -1,0 +1,19 @@
+{
+  "name": "gb9k",
+  "version": "1.0.0",
+  "description": "Text-based LLM tool",
+  "type": "module",
+  "main": "make_prompt.js",
+  "bin": {
+    "gb9k": "./main.js",
+    "gb9k_run": "./main.js"
+  },
+  "scripts": {
+    "start": "node make_prompt.js"
+  },
+  "dependencies": {
+    "clipboardy": "^3.0.0"
+  },
+  "author": "sosaysthecaptain",
+  "license": "MIT"
+}
