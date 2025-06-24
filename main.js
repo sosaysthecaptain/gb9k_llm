@@ -2,6 +2,9 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+const execAsync = promisify(exec);
 const { default: clipboardy } = await import('clipboardy');
 
 const VALID_EXTENSIONS = [
@@ -12,7 +15,6 @@ const VALID_EXTENSIONS = [
 
 async function getAllCodeFiles(dir, specificPaths = null, excludePaths = new Set()) {
 	let files = [];
-
 	// Normalize exclude paths to absolute paths and resolve them
 	const normalizedExcludePaths = Array.from(excludePaths).map(p => path.resolve(p));
 
@@ -100,10 +102,11 @@ Usage: gb9k [options] [path1 path2 ...]
 
 Concatenates code files into a single prompt, separated by file paths, and copies to clipboard.
 Optionally writes to a specified file if --file is provided with a filename.
+Always writes to _PROMPT.md with a structured format and opens it in VS Code.
 
 Options:
   --help            Show this help message and exit
-  --file <filename> Write the output to the specified file in addition to copying to clipboard
+  --file <filename> Write the output to the specified file in addition to copying to clipboard and writing to _PROMPT.md
   --exclude path1 [path2 ...]
                     Exclude specified files or directories from processing
 
@@ -120,110 +123,133 @@ Examples:
     `);
 	}
 
-	async function main() {
-		try {
-			const args = process.argv.slice(2);
+async function main() {
+	try {
+		const args = process.argv.slice(2);
 
-			// Check for --help flag
-			if (args.includes('--help')) {
-				showHelp();
-				return;
+		// Check for --help flag
+		if (args.includes('--help')) {
+			showHelp();
+			return;
+		}
+
+		// Handle --file flag and collect the filename
+		let outputFile = null;
+		let fileNext = false;
+		const remainingArgsAfterFile = args.filter(arg => {
+			if (arg === '--file') {
+				fileNext = true;
+				return false;
 			}
+			if (fileNext) {
+				if (arg.startsWith('--')) {
+					fileNext = false;
+					return true;
+				}
+				outputFile = arg;
+				return false;
+			}
+			return true;
+		});
 
-			// Handle --file flag and collect the filename
-			let outputFile = null;
-			let fileNext = false;
-			const remainingArgsAfterFile = args.filter(arg => {
-				if (arg === '--file') {
-					fileNext = true;
-					return false;
+		// Handle --exclude flag and collect paths to exclude
+		let excludePaths = new Set();
+		let excludeNext = false;
+		const remainingArgs = remainingArgsAfterFile.filter(arg => {
+			if (arg === '--exclude') {
+				excludeNext = true;
+				return false;
+			}
+			if (excludeNext) {
+				if (arg.startsWith('--')) {
+					excludeNext = false;
+					return true;
 				}
-				if (fileNext) {
-					if (arg.startsWith('--')) {
-						fileNext = false;
-						return true;
-					}
-					outputFile = arg;
-					return false;
-				}
-				return true;
-			});
+				excludePaths.add(arg);
+				return false;
+			}
+			return true;
+		});
 
-			// Handle --exclude flag and collect paths to exclude
-			let excludePaths = new Set();
-			let excludeNext = false;
-			const remainingArgs = remainingArgsAfterFile.filter(arg => {
-				if (arg === '--exclude') {
-					excludeNext = true;
-					return false;
-				}
-				if (excludeNext) {
-					if (arg.startsWith('--')) {
-						excludeNext = false;
-						return true;
-					}
-					excludePaths.add(arg);
-					return false;
-				}
-				return true;
-			});
-
-			const specificPaths = remainingArgs
+		const specificPaths = remainingArgs
 			.map(p => path.resolve(p))
 			.filter(p => !excludePaths.has(p));
 
-			const files = await getAllCodeFiles(process.cwd(), specificPaths.length > 0 ? specificPaths : null, excludePaths);
+		const files = await getAllCodeFiles(process.cwd(), specificPaths.length > 0 ? specificPaths : null, excludePaths);
 
-			if (files.length === 0) {
-				console.log('No code files found');
-				return;
-			}
+		if (files.length === 0) {
+			console.log('No code files found');
+			return;
+		}
 
-			// Process files and collect stats
-			const fileContents = await Promise.all(
-				files.map(async file => {
-					const relativePath = path.relative(process.cwd(), file);
-					const content = await fs.readFile(file, 'utf8');
-					return { relativePath, content };
-				})
-			);
+		// Process files and collect stats
+		const fileContents = await Promise.all(
+			files.map(async file => {
+				const relativePath = path.relative(process.cwd(), file);
+				const content = await fs.readFile(file, 'utf8');
+				return { relativePath, content };
+			})
+		);
 
-			// Concatenate contents with separators
-			const result = fileContents
+		// Concatenate contents with separators
+		const result = fileContents
 			.map(({ relativePath, content }) => `/* ~~~ ${relativePath} ~~~ */\n${content}`)
 			.join('\n\n');
 
-			// Calculate stats
-			const fileCount = files.length;
-			const lineCount = countLines(result);
-			const tokenCount = estimateTokens(result);
+		// Calculate stats
+		const fileCount = files.length;
+		const lineCount = countLines(result);
+		const tokenCount = estimateTokens(result);
 
-			// Copy to clipboard first
-			await clipboardy.write(result);
-			console.log('Content copied to clipboard');
+		// Copy to clipboard first
+		await clipboardy.write(result);
+		console.log('Content copied to clipboard');
 
-			// Log included files
-			console.log('\nIncluded files:');
-			fileContents.forEach(({ relativePath }) => {
-				console.log(`- ${relativePath}`);
-			});
+		// Log included files
+		console.log('\nIncluded files:');
+		fileContents.forEach(({ relativePath }) => {
+			console.log(`- ${relativePath}`);
+		});
 
-			// Log stats with formatted numbers
-			console.log('\nStats:');
-			console.log(`- Number of files: ${formatNumber(fileCount)}`);
-			console.log(`- Number of lines: ${formatNumber(lineCount)}`);
-			console.log(`- Estimated tokens: ${formatNumber(tokenCount)}`);
+		// Log stats with formatted numbers
+		console.log('\nStats:');
+		console.log(`- Number of files: ${formatNumber(fileCount)}`);
+		console.log(`- Number of lines: ${formatNumber(lineCount)}`);
+		console.log(`- Estimated tokens: ${formatNumber(tokenCount)}`);
 
-			// Write to file if --file flag was provided with a filename
-			if (outputFile) {
-				await fs.writeFile(outputFile, result);
-				console.log(`Content written to ${outputFile}`);
-			}
+		// Write to _PROMPT.md with the specified structure
+		const fileList = fileContents.map(({ relativePath }) => `- ${relativePath}`).join('\n');
+		const promptContent = `### Model
+gemini-2.5-pro
 
-		} catch (error) {
-			console.error('Error:', error);
-			process.exit(1);
+### Context
+${fileList}
+
+# Chat
+
+### User
+<!-- Enter your prompt here, then execute \`gb9k run\` -->`;
+		await fs.writeFile('_PROMPT.md', promptContent);
+		console.log('Content written to _PROMPT.md');
+
+		// Write to file if --file flag was provided with a filename
+		if (outputFile) {
+			await fs.writeFile(outputFile, result);
+			console.log(`Content written to ${outputFile}`);
 		}
-	}
 
-	main();
+		// Open _PROMPT.md in VS Code
+		try {
+			await execAsync('code _PROMPT.md');
+			console.log('Opened _PROMPT.md in VS Code');
+		} catch (error) {
+			console.error('Error opening _PROMPT.md in VS Code:', error.message);
+		}
+
+	} catch (error) {
+		console.error('Error:', error);
+		process.exit(1);
+	}
+}
+
+main();
