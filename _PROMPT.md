@@ -1,5 +1,5 @@
 ### Model
-gemini-2.5-pro
+openai/gpt-4o
 
 ### Context
 - README.md
@@ -10,4 +10,4 @@ gemini-2.5-pro
 -----------
 
 ### User
-<!-- Enter your prompt here, then execute `gb9k run` -->
+This is a test prompt. Pick a planet and tell me about it briefly.

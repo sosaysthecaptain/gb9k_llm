@@ -274,7 +274,7 @@ async function main() {
 		// Write to _PROMPT.md with the specified structure
 		const fileList = fileContents.map(({ relativePath }) => `- ${relativePath}`).join('\n');
 		const promptContent = `### Model
-gemini-2.5-pro
+anthropic/claude-3.5-sonnet
 
 ### Context
 ${fileList}
