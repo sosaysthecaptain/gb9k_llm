@@ -72,22 +72,49 @@ async function parsePromptFile(filePath) {
     }
   }
 
-  return { model, contextFiles, messages };
+  return { model, contextFiles, messages, originalContent: content };
 }
 
 async function getFileContents(contextFiles) {
-  const excludePaths = new Set(contextFiles.map(file => path.resolve(file)));
-  const files = await getAllCodeFiles(process.cwd(), contextFiles.length > 0 ? contextFiles : null, excludePaths);
+  if (contextFiles.length === 0) {
+    return '';
+  }
+
+  // Resolve context file paths relative to current directory
+  const specificPaths = contextFiles.map(file => path.resolve(process.cwd(), file));
+  // Only exclude _PROMPT files, not the context files themselves
+  const excludePaths = new Set();
+  const files = await getAllCodeFiles(process.cwd(), specificPaths, excludePaths);
+
+  if (files.length === 0) {
+    console.warn('No valid code files found for the provided context.');
+    return '';
+  }
 
   const fileContents = await Promise.all(
     files.map(async file => {
       const relativePath = path.relative(process.cwd(), file);
-      const content = await fs.readFile(file, 'utf8');
-      return { relativePath, content };
+      try {
+        const content = await fs.readFile(file, 'utf8');
+        return { relativePath, content };
+      } catch (error) {
+        console.warn(`Failed to read file ${relativePath}: ${error.message}`);
+        return null;
+      }
     })
   );
 
-  return fileContents.map(({ relativePath, content }) => `/* ~~~ ${relativePath} ~~~ */\n${content}`).join('\n\n');
+  // Filter out any failed reads
+  return fileContents
+    .filter(item => item !== null)
+    .map(({ relativePath, content }) => `/* ~~~ ${relativePath} ~~~ */\n${content}`)
+    .join('\n\n');
+}
+
+async function appendToPromptFile(promptFile, llmResponse) {
+  const originalContent = await fs.readFile(promptFile, 'utf8');
+  const newContent = `${originalContent}\n\n### LLM\n${llmResponse}\n\n### User\n<!-- Enter your next prompt here, then execute \`gb9k run\` -->`;
+  await fs.writeFile(promptFile, newContent, { encoding: 'utf8' });
 }
 
 export async function runPrompt() {
@@ -121,21 +148,17 @@ export async function runPrompt() {
   // Prepare messages
   const apiMessages = [
     { role: 'system', content: SYSTEM_MESSAGE },
-    { role: 'user', content: `Relevant files:\n${contextFiles.join('\n')}` },
+    { role: 'user', content: `Relevant files:\n${contextFiles.length > 0 ? contextFiles.join('\n') : 'None'}` },
   ];
 
   if (contextFiles.length > 0) {
     const fileContents = await getFileContents(contextFiles);
-    apiMessages.push({ role: 'user', content: `File contents:\n${fileContents}` });
+    if (fileContents) {
+      apiMessages.push({ role: 'user', content: `File contents:\n${fileContents}` });
+    }
   }
 
   apiMessages.push(...messages);
-
-  // Log messages for debugging
-  console.log('Messages sent to OpenRouter:');
-  apiMessages.forEach((msg, index) => {
-    console.log(`Message ${index + 1} (${msg.role}):\n${msg.content}\n`);
-  });
 
   const headers = {
     'Authorization': `Bearer ${apiKey}`,
@@ -150,6 +173,7 @@ export async function runPrompt() {
     stream: true,
   });
 
+  let llmResponse = '';
   try {
     const response = await fetch(OPENROUTER_API_URL, {
       method: 'POST',
@@ -177,6 +201,7 @@ export async function runPrompt() {
             const content = parsed.choices[0]?.delta?.content;
             if (content) {
               process.stdout.write(content);
+              llmResponse += content;
             }
           } catch (error) {
             console.error('Error parsing stream chunk:', error.message);
@@ -184,6 +209,10 @@ export async function runPrompt() {
         }
       }
     }
+
+    // Append response to _PROMPT file
+    await appendToPromptFile(promptFile, llmResponse);
+
   } catch (error) {
     console.error('Error during API call:', error.message);
     process.exit(1);
