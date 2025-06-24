@@ -225,7 +225,7 @@ gemini-2.5-pro
 ### Context
 ${fileList}
 
-# Chat
+-----------
 
 ### User
 <!-- Enter your prompt here, then execute \`gb9k run\` -->`;
