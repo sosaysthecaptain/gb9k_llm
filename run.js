@@ -23,6 +23,24 @@ const VALID_MODELS = [
 const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
 const SYSTEM_MESSAGE = `You are a coding assistant. You will receive: (1) a list of relevant files, (2) the contents of those files, and (3) the user's prompt and subsequent conversation. Provide useful modifications to files in code blocks labeled with the file name after the opening triple backticks, and then the operation (<REWRITE>, <MODIFICATION>) (e.g., \`\`\`main.js <REWRITE>). Separate each code file modification with a line containing only three dashes (---).`;
 
+function calculatePrice(promptTokens, completionTokens, model, models) {
+  const modelInfo = models.find(m => m.id === model);
+  if (!modelInfo || !modelInfo.pricing) {
+    return null;
+  }
+
+  const promptCost = (modelInfo.pricing.prompt || 0) * promptTokens;
+  const completionCost = (modelInfo.pricing.completion || 0) * completionTokens;
+  return {
+    promptCost,
+    completionCost,
+    totalCost: promptCost + completionCost,
+    promptTokens,
+    completionTokens,
+    pricing: modelInfo.pricing
+  };
+}
+
 async function findPromptFile() {
   const items = await fs.readdir(process.cwd(), { withFileTypes: true });
   for (const item of items) {
@@ -205,10 +223,8 @@ export async function runPrompt() {
     process.exit(1);
   }
 
-  // Initialize the prompt file with ### LLM if needed
   await initializePromptFile(promptFile);
 
-  // Prepare messages
   const apiMessages = [
     { role: 'system', content: SYSTEM_MESSAGE },
     { role: 'user', content: `Relevant files:\n${contextFiles.length > 0 ? contextFiles.join('\n') : 'None'}` },
@@ -222,6 +238,9 @@ export async function runPrompt() {
   }
 
   apiMessages.push(...messages);
+
+  // Fetch models for pricing information
+  const models = await getModels(apiKey);
 
   const headers = {
     'Authorization': `Bearer ${apiKey}`,
@@ -248,23 +267,30 @@ export async function runPrompt() {
       throw new Error(`OpenRouter API error: ${response.status} ${errorText}`);
     }
 
-    console.log('Streaming response from OpenRouter:');
+    let responseText = '';
+    let promptTokens = 0;
+    let completionTokens = 0;
+
     for await (const chunk of response.body) {
       const lines = chunk.toString('utf8').split('\n').filter(line => line.trim());
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
           if (data === '[DONE]') {
-            console.log('\nStreaming complete.');
-            await appendToPromptFile(promptFile, '', true); // Add ### User section
+            await appendToPromptFile(promptFile, '', true);
             break;
           }
           try {
             const parsed = JSON.parse(data);
             const content = parsed.choices[0]?.delta?.content;
             if (content) {
-              process.stdout.write(content);
-              await appendToPromptFile(promptFile, content); // Append each chunk
+              responseText += content;
+              await appendToPromptFile(promptFile, content);
+            }
+            // Update token counts if available in the response
+            if (parsed.usage) {
+              promptTokens = parsed.usage.prompt_tokens || 0;
+              completionTokens = parsed.usage.completion_tokens || 0;
             }
           } catch (error) {
             console.error('Error parsing stream chunk:', error.message);
@@ -272,6 +298,26 @@ export async function runPrompt() {
         }
       }
     }
+
+    // If token counts weren't provided, estimate them
+    if (!promptTokens) {
+      promptTokens = Math.ceil(apiMessages.reduce((acc, msg) => acc + msg.content.length / 4, 0));
+    }
+    if (!completionTokens) {
+      completionTokens = Math.ceil(responseText.length / 4);
+    }
+
+    const pricing = calculatePrice(promptTokens, completionTokens, model, models);
+    if (pricing) {
+      console.log('\nUsage Statistics:');
+      console.log(`Input tokens: ${pricing.promptTokens.toLocaleString()}`);
+      console.log(`Output tokens: ${pricing.completionTokens.toLocaleString()}`);
+      console.log(`\nEstimated Costs:`);
+      console.log(`Input: $${pricing.promptCost.toFixed(4)}`);
+      console.log(`Output: $${pricing.completionCost.toFixed(4)}`);
+      console.log(`Total: $${pricing.totalCost.toFixed(4)}`);
+    }
+
   } catch (error) {
     console.error('Error during API call:', error.message);
     process.exit(1);
