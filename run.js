@@ -164,15 +164,15 @@ export async function listModels() {
   });
 
   console.log('\nAvailable Models (sorted by estimated code capability):');
-  console.log('------------------------------------------------');
-  console.log('Model ID                    Input Price    Output Price');
-  console.log('------------------------------------------------');
+  console.log('========================================================================================');
+  console.log('Model ID                                                  Input Price       Output Price          ');
+  console.log('========================================================================================');
 
   for (const model of sortedModels) {
     const inputPrice = formatPrice(model.pricing?.prompt);
     const outputPrice = formatPrice(model.pricing?.completion);
     console.log(
-      `${model.id.padEnd(26)} ${inputPrice.padEnd(14)} ${outputPrice}`
+      `${model.id.padEnd(50)}        ${inputPrice.padEnd(10)}        ${outputPrice.padEnd(30)}`
     );
   }
 }
