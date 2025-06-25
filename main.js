@@ -5,7 +5,7 @@ import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { prompt_user_for_api_key, getAllCodeFiles } from './utils.js';
-import { runPrompt } from './run.js';
+import { runPrompt, listModels } from './run.js';
 const execAsync = promisify(exec);
 const { default: clipboardy } = await import('clipboardy');
 
@@ -31,6 +31,7 @@ Commands:
   copy              Concatenates code files and copies to clipboard without writing to any file
   cleanup           Deletes all markdown files starting with _PROMPT
   run               Sends the user prompt from _PROMPT.md to OpenRouter and streams the response
+	models            Lists available models sorted by capability, with pricing
   set_api_key       Sets or updates the API key for the tool
   (default)         Concatenates code files, copies to clipboard, writes to _PROMPT.md, and opens in VS Code
 
@@ -130,6 +131,11 @@ async function main() {
       return;
     }
 
+		if (command === 'models') {
+      await listModels();
+      return;
+    }
+
     let outputFile = null;
     let fileNext = false;
     const remainingArgsAfterFile = argsWithoutCommand.filter(arg => {
@@ -184,8 +190,13 @@ async function main() {
     }
 
     const fileList = fileContents.map(({ relativePath }) => `- ${relativePath}`).join('\n');
-    const promptContent = `### Model
-gemini-2.5-pro
+    const promptContent = `<!--
+Enter your prompt at the bottom, then execute \`gb9k run\`
+When done, run \`gb9k cleanup\` to delete this file
+-->
+
+### Model
+anthropic/claude-3.5-sonnet
 
 ### Context
 ${fileList}
@@ -193,7 +204,7 @@ ${fileList}
 -----------
 
 ### User
-<!-- Enter your prompt here, then execute \`gb9k run\` -->`;
+`;
     await fs.writeFile('_PROMPT.md', promptContent);
     console.log('Content written to _PROMPT.md');
 

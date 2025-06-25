@@ -2,15 +2,105 @@ import readline from 'readline/promises';
 import os from 'os';
 import fs from 'fs/promises';
 import path from 'path';
+import fetch from 'node-fetch';
 
 const CONFIG_DIR = path.join(os.homedir(), '.gb9k');
 const API_KEY_FILE = path.join(CONFIG_DIR, 'api_key');
+const MODELS_CACHE_FILE = path.join(CONFIG_DIR, 'models_cache.json');
+const MODELS_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 
 const VALID_EXTENSIONS = [
   '.js', '.ts', '.jsx', '.tsx',
   '.json', '.py', '.java', '.cpp',
   '.c', '.cs', '.rb', '.php', '.go', '.md', '.txt'
 ];
+
+export async function fetchAndCacheModels(apiKey) {
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/models', {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': 'https://github.com/sosaysthecaptain/gb9k',
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch models: ${response.status}`);
+    }
+
+    const responseData = await response.json();
+    const models = responseData.data || [];
+
+    // Only cache if we have valid model data
+    if (Array.isArray(models) && models.length > 0) {
+      const cacheData = {
+        timestamp: Date.now(),
+        models
+      };
+      await fs.writeFile(MODELS_CACHE_FILE, JSON.stringify(cacheData, null, 2));
+      console.debug(`Cached ${models.length} models to ${MODELS_CACHE_FILE}`); // Debug log
+      return models;
+    } else {
+      console.error('No valid models in API response; not caching.');
+      return [];
+    }
+  } catch (error) {
+    console.error('Error fetching models:', error.message);
+    return [];
+  }
+}
+
+export async function getModels(apiKey) {
+  try {
+    // Check if cache file exists
+    const cacheExists = await fs.access(MODELS_CACHE_FILE)
+      .then(() => true)
+      .catch(() => false);
+
+    if (cacheExists) {
+      let cacheData;
+      try {
+        cacheData = JSON.parse(await fs.readFile(MODELS_CACHE_FILE, 'utf8'));
+      } catch (error) {
+        console.error('Invalid cache file; clearing cache:', error.message);
+        await fs.unlink(MODELS_CACHE_FILE).catch(() => {}); // Remove invalid cache
+        return await fetchAndCacheModels(apiKey); // Fetch fresh data
+      }
+
+      // Validate cache contents
+      if (
+        cacheData &&
+        typeof cacheData === 'object' &&
+        Array.isArray(cacheData.models) &&
+        cacheData.models.length > 0 &&
+        typeof cacheData.timestamp === 'number'
+      ) {
+        const cacheAge = Date.now() - cacheData.timestamp;
+        if (cacheAge < MODELS_CACHE_TTL) {
+          console.debug(`Using cached models (${cacheData.models.length} models, age: ${cacheAge / 1000}s)`); // Debug log
+          return cacheData.models;
+        }
+      } else {
+        console.error('Cache is invalid or empty; clearing cache.');
+        await fs.unlink(MODELS_CACHE_FILE).catch(() => {}); // Remove invalid cache
+      }
+    }
+
+    // No valid cache; fetch fresh data
+    console.debug('No valid cache found; fetching fresh models.');
+    return await fetchAndCacheModels(apiKey);
+  } catch (error) {
+    console.error('Error getting models:', error.message);
+    return [];
+  }
+}
+
+// Function to format pricing
+export function formatPrice(price) {
+  if (!price) return 'N/A';
+  const pricePerToken = price * 1000; // Convert to price per 1K tokens
+  return `$${pricePerToken.toFixed(3)}/1K`;
+}
 
 export async function ask_question(question, validResponses = null) {
   const rl = readline.createInterface({

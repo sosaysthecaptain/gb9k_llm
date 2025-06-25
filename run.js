@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { get_api_key, getAllCodeFiles } from './utils.js';
+import { get_api_key, getAllCodeFiles, getModels, formatPrice } from './utils.js';
 import fetch from 'node-fetch';
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -21,7 +21,7 @@ const VALID_MODELS = [
   'openrouter/auto',
 ];
 const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
-const SYSTEM_MESSAGE = `You are a coding assistant. You will receive: (1) a list of relevant files, (2) the contents of those files, and (3) the user's prompt and subsequent conversation. Provide useful modifications to files in code blocks labeled with the file name after the opening triple backticks (e.g., \`\`\`main.js).`;
+const SYSTEM_MESSAGE = `You are a coding assistant. You will receive: (1) a list of relevant files, (2) the contents of those files, and (3) the user's prompt and subsequent conversation. Provide useful modifications to files in code blocks labeled with the file name after the opening triple backticks, and then the operation (<REWRITE>, <MODIFICATION>) (e.g., \`\`\`main.js <REWRITE>). Separate each code file modification with a line containing only three dashes (---).`;
 
 async function findPromptFile() {
   const items = await fs.readdir(process.cwd(), { withFileTypes: true });
@@ -72,7 +72,7 @@ async function parsePromptFile(filePath) {
     }
   }
 
-  return { model, contextFiles, messages, originalContent: content };
+  return { model, contextFiles, messages };
 }
 
 async function getFileContents(contextFiles) {
@@ -111,10 +111,70 @@ async function getFileContents(contextFiles) {
     .join('\n\n');
 }
 
-async function appendToPromptFile(promptFile, llmResponse) {
+async function initializePromptFile(promptFile) {
   const originalContent = await fs.readFile(promptFile, 'utf8');
-  const newContent = `${originalContent}\n\n### LLM\n${llmResponse}\n\n### User\n<!-- Enter your next prompt here, then execute \`gb9k run\` -->`;
-  await fs.writeFile(promptFile, newContent, { encoding: 'utf8' });
+  // Ensure the file ends with ### LLM section for incremental updates
+  if (!originalContent.includes('### LLM')) {
+    await fs.appendFile(promptFile, '\n\n### LLM\n', { encoding: 'utf8' });
+  }
+}
+
+async function appendToPromptFile(promptFile, content, isFinal = false) {
+  // Append content to the ### LLM section
+  await fs.appendFile(promptFile, content, { encoding: 'utf8' });
+  if (isFinal) {
+    // Add new ### User section after streaming is complete
+    await fs.appendFile(promptFile, '\n\n### User\n<!-- Enter your next prompt here, then execute `gb9k run` -->', { encoding: 'utf8' });
+  }
+}
+
+export async function listModels() {
+  const apiKey = await get_api_key();
+  if (!apiKey) {
+    console.error('API key not set. Please run `gb9k set_api_key` first.');
+    process.exit(1);
+  }
+
+  const models = await getModels(apiKey);
+  if (!Array.isArray(models) || models.length === 0) {
+    console.error('No models available or invalid response from API.');
+    process.exit(1);
+  }
+
+  // Sort models by their likely code capability
+  const modelPriority = {
+    'claude-3': 1,
+    'gemini-2': 2,
+    'gemini-pro': 2,
+    'gpt-4': 3,
+    'claude-2': 4,
+    'mixtral': 5,
+    'llama': 6
+  };
+
+  const sortedModels = models.sort((a, b) => {
+    const getPriority = (model) => {
+      if (!model || !model.id) return 999;
+      for (const [key, priority] of Object.entries(modelPriority)) {
+        if (model.id.toLowerCase().includes(key)) return priority;
+      }
+      return 999;
+    };
+    return getPriority(a) - getPriority(b);
+  });
+
+  console.log('\nAvailable Models (sorted by estimated code capability):');
+  console.log('------------------------------------------------');
+  console.log('Model ID                    Input Price    Output Price');
+  console.log('------------------------------------------------');
+
+  for (const model of sortedModels) {
+    const inputPrice = formatPrice(model.pricing?.prompt);
+    const outputPrice = formatPrice(model.pricing?.completion);
+    console.log(
+      `${model.id.padEnd(26)} ${inputPrice.padEnd(14)} ${outputPrice}`
+    );
+  }
 }
 
 export async function runPrompt() {
@@ -145,6 +205,9 @@ export async function runPrompt() {
     process.exit(1);
   }
 
+  // Initialize the prompt file with ### LLM if needed
+  await initializePromptFile(promptFile);
+
   // Prepare messages
   const apiMessages = [
     { role: 'system', content: SYSTEM_MESSAGE },
@@ -173,7 +236,6 @@ export async function runPrompt() {
     stream: true,
   });
 
-  let llmResponse = '';
   try {
     const response = await fetch(OPENROUTER_API_URL, {
       method: 'POST',
@@ -194,6 +256,7 @@ export async function runPrompt() {
           const data = line.slice(6);
           if (data === '[DONE]') {
             console.log('\nStreaming complete.');
+            await appendToPromptFile(promptFile, '', true); // Add ### User section
             break;
           }
           try {
@@ -201,7 +264,7 @@ export async function runPrompt() {
             const content = parsed.choices[0]?.delta?.content;
             if (content) {
               process.stdout.write(content);
-              llmResponse += content;
+              await appendToPromptFile(promptFile, content); // Append each chunk
             }
           } catch (error) {
             console.error('Error parsing stream chunk:', error.message);
@@ -209,10 +272,6 @@ export async function runPrompt() {
         }
       }
     }
-
-    // Append response to _PROMPT file
-    await appendToPromptFile(promptFile, llmResponse);
-
   } catch (error) {
     console.error('Error during API call:', error.message);
     process.exit(1);
